@@ -9,6 +9,74 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Set, Tuple
 from datetime import datetime
 
+# ============================================================================
+# SECURITY SHIELD: INPUT VALIDATION
+# ============================================================================
+# This function acts as a "Guard Dog." It checks ALL incoming data BEFORE
+# the main logic runs. If the data is bad, it stops the system immediately.
+# ============================================================================
+
+def validate_input(data: dict) -> bool:
+    """
+    SECURITY CHECK: Ensures only valid, safe data enters the system.
+    Raises ValueError if data is missing, invalid, or malicious.
+    """
+    
+    # 1. Check for Required Fields
+    required_fields = ["type"]
+    for field in required_fields:
+        if field not in data:
+            raise ValueError(f"SECURITY BLOCK: Missing required field '{field}'")
+
+    # 2. Validate 'type' (Prevent fake types)
+    valid_types = ["bug", "feature_request", "general_feedback"]
+    if data["type"] not in valid_types:
+        raise ValueError(f"SECURITY BLOCK: Invalid type '{data['type']}'. Allowed: {valid_types}")
+
+    # 3. Validate 'severity' if present (Prevent fake severities)
+    if "severity" in data:
+        valid_severities = ["low", "medium", "high", "critical"]
+        if data["severity"] not in valid_severities:
+            raise ValueError(f"SECURITY BLOCK: Invalid severity '{data['severity']}'. Allowed: {valid_severities}")
+
+    # 4. Block Malicious Content (Basic XSS/Injection Check)
+    # Checks the 'message' and 'title' fields for script tags or javascript protocols
+    dangerous_strings = ["<script", "javascript:", "onerror=", "onclick=", "eval("]
+    check_fields = ["message", "title", "page"]
+    
+    for field_name in check_fields:
+        if field_name in data:
+            field_value = str(data[field_name]).lower()
+            for danger in dangerous_strings:
+                if danger in field_value:
+                    raise ValueError(f"SECURITY BLOCK: Malicious content detected in '{field_name}'")
+
+    # 5. Check for Rate Limiting (Simple In-Memory Counter)
+    # Note: For a production app, use Redis. This is a basic check for now.
+    # We will use a global dictionary to track requests per IP (simulated by user_id or IP)
+    global _request_tracker
+    if '_request_tracker' not in globals():
+        _request_tracker = {}
+    
+    # Simulate getting a user ID (In real app, get from headers/auth)
+    user_id = data.get("user_email", "anonymous") 
+    
+    current_time = time.time()
+    
+    # Reset tracker if older than 60 seconds
+    if user_id not in _request_tracker or (current_time - _request_tracker[user_id]['last_seen']) > 60:
+        _request_tracker[user_id] = {'count': 0, 'last_seen': current_time}
+    
+    # Check limit (Max 5 requests per minute)
+    if _request_tracker[user_id]['count'] >= 5:
+        raise ValueError("SECURITY BLOCK: Too many requests. Please wait 60 seconds.")
+    
+    # Increment counter
+    _request_tracker[user_id]['count'] += 1
+    _request_tracker[user_id]['last_seen'] = current_time
+
+    return True
+
 # Constants
 ALPHA = 0.15
 DEATH_SPIRAL_THRESHOLD = 0.045
