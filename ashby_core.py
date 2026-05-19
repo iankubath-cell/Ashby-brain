@@ -404,7 +404,6 @@ def validate_input(data: dict) -> bool:
 
 system_state = StabilityState()
 
-def handle_feedback(event: dict) -> dict:
 
 def handle_feedback(event: dict) -> dict:
     validate_input(event)  # <--- THIS LINE MUST BE ADDED
