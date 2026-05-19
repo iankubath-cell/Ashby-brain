@@ -410,10 +410,7 @@ def handle_feedback(event: dict) -> dict:
     
     input_type = event.get("type", "general_feedback")
     severity_str = event.get("severity", "medium")
-    # ... rest of the code
-    
-    input_type = event.get("type", "general_feedback")
-    severity_str = event.get("severity", "medium")
+        
     try:
         severity = Severity(severity_str)
     except ValueError:
