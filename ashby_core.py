@@ -346,6 +346,62 @@ class ViraValidator:
             "action": "APPLY_MUTATION"
         }
 
+# ============================================================================
+# SECURITY SHIELD: INPUT VALIDATION
+# ============================================================================
+def validate_input(data: dict) -> bool:
+    """
+    SECURITY CHECK: Ensures only valid, safe data enters the system.
+    Raises ValueError if data is missing, invalid, or malicious.
+    """
+    
+    # 1. Check for Required Fields
+    required_fields = ["type"]
+    for field_name in required_fields:
+        if field_name not in data:
+            raise ValueError(f"SECURITY BLOCK: Missing required field '{field_name}'")
+
+    # 2. Validate 'type' (Prevent fake types)
+    valid_types = ["bug", "feature_request", "general_feedback"]
+    if data["type"] not in valid_types:
+        raise ValueError(f"SECURITY BLOCK: Invalid type '{data['type']}'. Allowed: {valid_types}")
+
+    # 3. Validate 'severity' if present (Prevent fake severities)
+    if "severity" in data:
+        valid_severities = ["low", "medium", "high", "critical"]
+        if data["severity"] not in valid_severities:
+            raise ValueError(f"SECURITY BLOCK: Invalid severity '{data['severity']}'. Allowed: {valid_severities}")
+
+    # 4. Block Malicious Content (Basic XSS/Injection Check)
+    dangerous_strings = ["<script", "javascript:", "onerror=", "onclick=", "eval("]
+    check_fields = ["message", "title", "page"]
+    
+    for field_name in check_fields:
+        if field_name in data:
+            field_value = str(data[field_name]).lower()
+            for danger in dangerous_strings:
+                if danger in field_value:
+                    raise ValueError(f"SECURITY BLOCK: Malicious content detected in '{field_name}'")
+
+    # 5. Rate Limiting (Max 5 requests per minute per user)
+    global _request_tracker
+    if '_request_tracker' not in globals():
+        _request_tracker = {}
+    
+    user_id = data.get("user_email", "anonymous")
+    current_time = time.time()
+    
+    if user_id not in _request_tracker or (current_time - _request_tracker[user_id]['last_seen']) > 60:
+        _request_tracker[user_id] = {'count': 0, 'last_seen': current_time}
+    
+    if _request_tracker[user_id]['count'] >= 5:
+        raise ValueError("SECURITY BLOCK: Too many requests. Please wait 60 seconds.")
+    
+    _request_tracker[user_id]['count'] += 1
+    _request_tracker[user_id]['last_seen'] = current_time
+
+    return True
+
 system_state = StabilityState()
 
 def handle_feedback(event: dict) -> dict:
