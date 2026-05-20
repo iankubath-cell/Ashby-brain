@@ -1,9 +1,20 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware  # <--- ADD THIS IMPORT
 from pydantic import BaseModel
 from typing import Optional
 import ashby_core
 
 app = FastAPI()
+
+# --- ADD THIS BLOCK TO ENABLE CORS ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins (use specific URLs in production)
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods (GET, POST, etc.)
+    allow_headers=["*"],  # Allows all headers
+)
+# -------------------------------------
 
 class FeedbackEvent(BaseModel):
     type: str
