@@ -33,14 +33,94 @@ Date: May 2026
 import json
 import time
 import math
+import threading
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Set, Tuple
-from datetime import datetime
+from collections import deque
 
-# ============================================================
+# ============================================================================
+# SECURITY SHIELD: RATE LIMITING (Thread-Safe)
+# ============================================================================
+# Prevents "Denial of Stability" attacks (flooding with critical bugs).
+# Uses a sliding window with a lock to be safe in multi-threaded environments.
+
+_rate_limit_store = {}
+_rate_limit_lock = threading.Lock()
+
+def check_rate_limit(user_id: str, max_requests: int = 5, window_seconds: int = 60) -> bool:
+    """
+    Thread-safe sliding window rate limiter.
+    Returns True if allowed, False if blocked.
+    """
+    now = time.time()
+    
+    with _rate_limit_lock:
+        if user_id not in _rate_limit_store:
+            _rate_limit_store[user_id] = deque()
+        
+        user_history = _rate_limit_store[user_id]
+
+        # 1. Clean up old timestamps outside the window
+        while user_history and user_history[0] < now - window_seconds:
+            user_history.popleft()
+
+        # 2. Check if user is over the limit
+        if len(user_history) >= max_requests:
+            return False
+
+        # 3. Log the current request
+        user_history.append(now)
+        return True
+
+# ============================================================================
+# SECURITY SHIELD: INPUT VALIDATION
+# ============================================================================
+
+def validate_input(data: dict) -> bool:
+    """
+    SECURITY CHECK: Ensures only valid, safe data enters the system.
+    Raises ValueError if data is missing, invalid, or malicious.
+    """
+    
+    # 1. Check for Required Fields
+    required_fields = ["type"]
+    for field_name in required_fields:
+        if field_name not in data:
+            raise ValueError(f"SECURITY BLOCK: Missing required field '{field_name}'")
+
+    # 2. Validate 'type' (Prevent fake types)
+    valid_types = ["bug", "feature_request", "general_feedback"]
+    if data["type"] not in valid_types:
+        raise ValueError(f"SECURITY BLOCK: Invalid type '{data['type']}'. Allowed: {valid_types}")
+
+    # 3. Validate 'severity' if present
+    if "severity" in data:
+        valid_severities = ["low", "medium", "high", "critical"]
+        if data["severity"] not in valid_severities:
+            raise ValueError(f"SECURITY BLOCK: Invalid severity '{data['severity']}'. Allowed: {valid_severities}")
+
+    # 4. Block Malicious Content (Basic XSS/Injection Check)
+    dangerous_strings = ["<script", "javascript:", "onerror=", "onclick=", "eval("]
+    check_fields = ["message", "title", "page"]
+    
+    for field_name in check_fields:
+        if field_name in data:
+            field_value = str(data[field_name]).lower()
+            for danger in dangerous_strings:
+                if danger in field_value:
+                    raise ValueError(f"SECURITY BLOCK: Malicious content detected in '{field_name}'")
+
+    # 5. Rate Limiting Check
+    user_id = data.get("user_email", data.get("ip_address", "anonymous"))
+    if not check_rate_limit(user_id):
+        raise ValueError("SECURITY BLOCK: Too many requests. Please wait 60 seconds.")
+
+    return True
+
+# ============================================================================
 # CONSTANTS (MathGPT-Verified)
-# ============================================================
+# ============================================================================
 
 ALPHA = 0.15
 DEATH_SPIRAL_THRESHOLD = 0.045
@@ -49,9 +129,9 @@ STAGNATION_IGNORE_HOURS = 1
 LOW_SEVERITY_CUTOFF = 0.10
 RECOVERY_RESET_SCORE = 0.85
 
-# ============================================================
+# ============================================================================
 # ONTOLOGY
-# ============================================================
+# ============================================================================
 
 class LoopCategory(Enum):
     CATEGORY_I = "closed"
@@ -80,9 +160,9 @@ SEVERITY_PENALTIES = {
 STAGNATION_PENALTY = 0.50
 FEATURE_REQUEST_PENALTY = 0.05
 
-# ============================================================
+# ============================================================================
 # ASHBY — THE HOMEOSTAT
-# ============================================================
+# ============================================================================
 
 @dataclass
 class StabilityState:
@@ -124,10 +204,20 @@ class StabilityState:
         except ValueError:
             return 999
 
-    def apply_input(self, severity: Severity, input_type: str = "bug", timestamp: float = None) -> dict:
+    def calculate_weighted_penalty(self, severity: Severity, trust_score: float = 1.0) -> float:
+        """
+        Applies a trust-weighted dampening to the deterministic penalty.
+        trust_score: 0.0 (untrusted) to 1.0 (verified).
+        """
+        base_penalty = SEVERITY_PENALTIES[severity]
+        dampening = max(0.1, min(1.0, trust_score))
+        return base_penalty * dampening
+
+    def apply_input(self, severity: Severity, input_type: str = "bug", timestamp: float = None, trust_score: float = 1.0) -> dict:
         ts = timestamp or time.time()
         self.last_penalty_time = ts
 
+        # Stagnation Limiter Logic
         if self.stagnation_count >= STAGNATION_LIMIT:
             if input_type == "bug" and severity in [Severity.LOW, Severity.MEDIUM]:
                 if self.stagnation_start_time and (ts - self.stagnation_start_time) < STAGNATION_IGNORE_HOURS * 3600:
@@ -141,12 +231,12 @@ class StabilityState:
                 else:
                     self.stagnation_start_time = ts
 
-        penalty = 0.0
-        if input_type == "bug":
-            penalty = SEVERITY_PENALTIES[severity]
-        elif input_type == "feature_request":
-            penalty = FEATURE_REQUEST_PENALTY
-
+        # Calculate Weighted Penalty
+        penalty = self.calculate_weighted_penalty(severity, trust_score)
+        
+        if input_type == "feature_request":
+            penalty = FEATURE_REQUEST_PENALTY * trust_score
+        
         if self.stagnation_count >= STAGNATION_LIMIT:
             penalty += STAGNATION_PENALTY
 
@@ -232,9 +322,9 @@ class StabilityState:
         self.stagnation_start_time = None
         self.status = self._calculate_status()
 
-# ============================================================
+# ============================================================================
 # VIRA — THE CAUSAL VALIDATOR
-# ============================================================
+# ============================================================================
 
 class ViraValidator:
     @staticmethod
@@ -287,7 +377,7 @@ class ViraValidator:
                 "reason": "Graph contains a cycle (Feedback Loop). Category II.",
                 "path": None
             }
-
+        
         if not reachable:
             return {
                 "closure": LoopCategory.CATEGORY_II.value,
@@ -322,58 +412,47 @@ class ViraValidator:
             "action": "APPLY_MUTATION"
         }
 
-# ============================================================
-# INPUT VALIDATION
-# ============================================================
-
-def validate_input(data: dict) -> bool:
-    """
-    Validates incoming feedback data before processing.
-    Ensures required fields exist and are of correct type.
-    Returns True if valid, raises ValueError if invalid.
-    """
-    required_fields = ["type", "severity", "title", "message"]
-
-    for fld in required_fields:
-        if fld not in data:
-            raise ValueError(f"Missing required field: {fld}")
-        if not isinstance(data[fld], str) or not data[fld].strip():
-            raise ValueError(f"Field '{fld}' must be a non-empty string")
-
-    valid_severities = ["low", "medium", "high", "critical"]
-    if data["severity"].lower() not in valid_severities:
-        raise ValueError(f"Invalid severity: {data['severity']}. Must be one of {valid_severities}")
-
-    valid_types = ["bug", "feature_request", "general_feedback"]
-    if data["type"].lower() not in valid_types:
-        raise ValueError(f"Invalid type: {data['type']}. Must be one of {valid_types}")
-
-    return True
-
-# ============================================================
+# ============================================================================
 # API INTERFACE
-# ============================================================
+# ============================================================================
 
 system_state = StabilityState()
 
 def handle_feedback(event: dict) -> dict:
-    validate_input(event)
-
-    input_type = event.get("type", "general_feedback")
-    severity_str = event.get("severity", "medium")
     try:
-        severity = Severity(severity_str)
-    except ValueError:
-        severity = Severity.MEDIUM
-    result = system_state.apply_input(severity, input_type)
-    return {
-        "status": "processed",
-        "stability_score": result["stability_score"],
-        "system_status": result["status"],
-        "action": result["action"],
-        "cycles_to_stable": result["cycles_to_stable"],
-        "noise_ignored": system_state.noise_ignored_count
-    }
+        # 1. Security Check (Validation + Rate Limiting)
+        validate_input(event)
+        
+        # 2. Parse Input
+        input_type = event.get("type", "general_feedback")
+        severity_str = event.get("severity", "medium")
+        trust_score = event.get("trust_score", 1.0) # Default to 1.0 if not provided
+        
+        try:
+            severity = Severity(severity_str)
+        except ValueError:
+            severity = Severity.MEDIUM
+            
+        # 3. Apply Logic
+        result = system_state.apply_input(severity, input_type, trust_score=trust_score)
+        
+        return {
+            "status": "processed",
+            "stability_score": result["stability_score"],
+            "system_status": result["status"],
+            "action": result["action"],
+            "cycles_to_stable": result["cycles_to_stable"],
+            "noise_ignored": system_state.noise_ignored_count
+        }
+        
+    except ValueError as e:
+        # Return a clean error for security blocks
+        return {
+            "status": "blocked",
+            "reason": str(e),
+            "stability_score": round(system_state.score, 4),
+            "action": {"action": "IGNORE"}
+        }
 
 def handle_decay_cycle() -> dict:
     result = system_state.apply_decay()
