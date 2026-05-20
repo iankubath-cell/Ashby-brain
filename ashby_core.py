@@ -426,7 +426,7 @@ def handle_feedback(event: dict) -> dict:
         # 2. Parse Input
         input_type = event.get("type", "general_feedback")
         severity_str = event.get("severity", "medium")
-        trust_score = event.get("trust_score", 1.0) # Default to 1.0 if not provided
+        trust_score = event.get("trust_score", 1.0)
         
         try:
             severity = Severity(severity_str)
