@@ -1,6 +1,6 @@
 """
 ============================================================================
-ASHBY-VIRA CORE v2.0 — THE DETERMINISTIC BRAIN
+ASHBY-VIRA CORE v2.1 — THE DETERMINISTIC BRAIN (WITH PERSISTENCE)
 ============================================================================
 
 ARCHITECTURAL CONSTITUTION (Embedded by Lumo)
@@ -25,6 +25,10 @@ This module implements the "Homeostatic Controller" for the Ashby System.
    This code is the "Brain." It is separated from the "Shell" (Base44 UI)
    to ensure auditability and prevent "Black Box" failures.
 
+5. RESILIENCE (NEW):
+   State is persisted to disk to survive server restarts (Render Free Tier).
+   "Memory" is preserved even if the process dies.
+
 Built with: Stability Formula S(t+1) = S(t) + α(1-S(t)) - Σ(Penalties)
 Date: May 2026
 ============================================================================
@@ -34,42 +38,34 @@ import json
 import time
 import math
 import threading
+import os
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Set, Tuple
 from collections import deque
 
 # ============================================================================
+# CONFIGURATION
+# ============================================================================
+STATE_FILE = "ashby_state.json"  # File to save state to
+
+# ============================================================================
 # SECURITY SHIELD: RATE LIMITING (Thread-Safe)
 # ============================================================================
-# Prevents "Denial of Stability" attacks (flooding with critical bugs).
-# Uses a sliding window with a lock to be safe in multi-threaded environments.
 
 _rate_limit_store = {}
 _rate_limit_lock = threading.Lock()
 
 def check_rate_limit(user_id: str, max_requests: int = 5, window_seconds: int = 60) -> bool:
-    """
-    Thread-safe sliding window rate limiter.
-    Returns True if allowed, False if blocked.
-    """
     now = time.time()
-    
     with _rate_limit_lock:
         if user_id not in _rate_limit_store:
             _rate_limit_store[user_id] = deque()
-        
         user_history = _rate_limit_store[user_id]
-
-        # 1. Clean up old timestamps outside the window
         while user_history and user_history[0] < now - window_seconds:
             user_history.popleft()
-
-        # 2. Check if user is over the limit
         if len(user_history) >= max_requests:
             return False
-
-        # 3. Log the current request
         user_history.append(now)
         return True
 
@@ -78,32 +74,22 @@ def check_rate_limit(user_id: str, max_requests: int = 5, window_seconds: int = 
 # ============================================================================
 
 def validate_input(data: dict) -> bool:
-    """
-    SECURITY CHECK: Ensures only valid, safe data enters the system.
-    Raises ValueError if data is missing, invalid, or malicious.
-    """
-    
-    # 1. Check for Required Fields
     required_fields = ["type"]
     for field_name in required_fields:
         if field_name not in data:
             raise ValueError(f"SECURITY BLOCK: Missing required field '{field_name}'")
 
-    # 2. Validate 'type' (Prevent fake types)
     valid_types = ["bug", "feature_request", "general_feedback"]
     if data["type"] not in valid_types:
         raise ValueError(f"SECURITY BLOCK: Invalid type '{data['type']}'. Allowed: {valid_types}")
 
-    # 3. Validate 'severity' if present
     if "severity" in data:
         valid_severities = ["low", "medium", "high", "critical"]
         if data["severity"] not in valid_severities:
             raise ValueError(f"SECURITY BLOCK: Invalid severity '{data['severity']}'. Allowed: {valid_severities}")
 
-    # 4. Block Malicious Content (Basic XSS/Injection Check)
     dangerous_strings = ["<script", "javascript:", "onerror=", "onclick=", "eval("]
     check_fields = ["message", "title", "page"]
-    
     for field_name in check_fields:
         if field_name in data:
             field_value = str(data[field_name]).lower()
@@ -111,7 +97,6 @@ def validate_input(data: dict) -> bool:
                 if danger in field_value:
                     raise ValueError(f"SECURITY BLOCK: Malicious content detected in '{field_name}'")
 
-    # 5. Rate Limiting Check
     user_id = data.get("user_email", data.get("ip_address", "anonymous"))
     if not check_rate_limit(user_id):
         raise ValueError("SECURITY BLOCK: Too many requests. Please wait 60 seconds.")
@@ -119,7 +104,7 @@ def validate_input(data: dict) -> bool:
     return True
 
 # ============================================================================
-# CONSTANTS (MathGPT-Verified)
+# CONSTANTS
 # ============================================================================
 
 ALPHA = 0.15
@@ -205,10 +190,6 @@ class StabilityState:
             return 999
 
     def calculate_weighted_penalty(self, severity: Severity, trust_score: float = 1.0) -> float:
-        """
-        Applies a trust-weighted dampening to the deterministic penalty.
-        trust_score: 0.0 (untrusted) to 1.0 (verified).
-        """
         base_penalty = SEVERITY_PENALTIES[severity]
         dampening = max(0.1, min(1.0, trust_score))
         return base_penalty * dampening
@@ -217,7 +198,6 @@ class StabilityState:
         ts = timestamp or time.time()
         self.last_penalty_time = ts
 
-        # Stagnation Limiter Logic
         if self.stagnation_count >= STAGNATION_LIMIT:
             if input_type == "bug" and severity in [Severity.LOW, Severity.MEDIUM]:
                 if self.stagnation_start_time and (ts - self.stagnation_start_time) < STAGNATION_IGNORE_HOURS * 3600:
@@ -231,12 +211,9 @@ class StabilityState:
                 else:
                     self.stagnation_start_time = ts
 
-        # Calculate Weighted Penalty
         penalty = self.calculate_weighted_penalty(severity, trust_score)
-        
         if input_type == "feature_request":
             penalty = FEATURE_REQUEST_PENALTY * trust_score
-        
         if self.stagnation_count >= STAGNATION_LIMIT:
             penalty += STAGNATION_PENALTY
 
@@ -413,14 +390,58 @@ class ViraValidator:
         }
 
 # ============================================================================
+# PERSISTENCE (NEW)
+# ============================================================================
+
+def save_state():
+    """Saves the current system state to a JSON file."""
+    try:
+        data = {
+            "score": system_state.score,
+            "stagnation_count": system_state.stagnation_count,
+            "history": system_state.history[-100:], # Keep last 100 entries to save space
+            "last_mutation_blocked": system_state.last_mutation_blocked,
+            "noise_ignored_count": system_state.noise_ignored_count,
+            "decay_cycle_count": system_state.decay_cycle_count
+        }
+        with open(STATE_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"Warning: Could not save state: {e}")
+
+def load_state():
+    """Loads the system state from a JSON file if it exists."""
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r") as f:
+                data = json.load(f)
+            
+            system_state.score = data.get("score", 1.0)
+            system_state.stagnation_count = data.get("stagnation_count", 0)
+            system_state.history = data.get("history", [])
+            system_state.last_mutation_blocked = data.get("last_mutation_blocked", False)
+            system_state.noise_ignored_count = data.get("noise_ignored_count", 0)
+            system_state.decay_cycle_count = data.get("decay_cycle_count", 0)
+            
+            # Recalculate status based on loaded score
+            system_state.status = system_state._calculate_status()
+            print(f"State loaded: Score={system_state.score}, Status={system_state.status.value}")
+        except Exception as e:
+            print(f"Warning: Could not load state: {e}")
+
+# ============================================================================
 # API INTERFACE
 # ============================================================================
 
+# Initialize global state
 system_state = StabilityState()
+
+# Load state on startup
+load_state()
 
 def handle_feedback(event: dict) -> dict:
     try:
-        # 1. Security Check (Validation + Rate Limiting)
+        # 1. Security Check
         validate_input(event)
         
         # 2. Parse Input
@@ -436,6 +457,9 @@ def handle_feedback(event: dict) -> dict:
         # 3. Apply Logic
         result = system_state.apply_input(severity, input_type, trust_score=trust_score)
         
+        # 4. Save State (Persistence)
+        save_state()
+        
         return {
             "status": "processed",
             "stability_score": result["stability_score"],
@@ -446,7 +470,6 @@ def handle_feedback(event: dict) -> dict:
         }
         
     except ValueError as e:
-        # Return a clean error for security blocks
         return {
             "status": "blocked",
             "reason": str(e),
@@ -456,6 +479,7 @@ def handle_feedback(event: dict) -> dict:
 
 def handle_decay_cycle() -> dict:
     result = system_state.apply_decay()
+    save_state() # Save after decay too
     return {
         "status": "decay_applied",
         "stability_score": result["stability_score"],
@@ -467,6 +491,7 @@ def handle_validate_mutation(mutation_graph: dict) -> dict:
     result = ViraValidator.validate_mutation(mutation_graph, system_state)
     if result["approved"]:
         system_state.reset_after_mutation()
+        save_state()
     return result
 
 def handle_get_state() -> dict:
