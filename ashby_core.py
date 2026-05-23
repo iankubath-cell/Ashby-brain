@@ -1,12 +1,33 @@
 """
 ============================================================================
-ASHBY-VIRA CORE v2.0 — THE DETERMINISTIC BRAIN
+ASHBY-VIRA CORE v2.0 - THE DETERMINISTIC BRAIN
 ============================================================================
 
 ARCHITECTURAL CONSTITUTION
 ---------------------------------------------
 Designed by Ian Kubath with AI-assisted architecture by Lumo (Proton).
-.............................................
+
+1. DETERMINISM FIRST:
+   Unlike the UI layer, this logic does NOT guess. It calculates.
+   Every stability score (S) is derived from explicit formulas, not probabilities.
+
+2. THE ARNOLDIAN FILTER:
+   We adopt Arnold Arnold CYBERNETIC LOGIC (Category I/II loops, Closure)
+   but REJECT his NUMBER THEORY (Prime patterns, RSA breaking).
+   This system validates CAUSALITY, not arithmetic shortcuts.
+
+3. EPISTEMIC HUMILITY:
+   If the data is insufficient to verify a mutation, this system DOES NOT GUESS.
+   It triggers the FROZEN STATE and alerts a human.
+   Better to stop than to hallucinate a solution.
+
+4. SAFETY PROTOCOL:
+   This code is the Brain. It is separated from the Shell (Base44 UI)
+   to ensure auditability and prevent Black Box failures.
+
+Built with: Stability Formula S(t+1) = S(t) + a(1-S(t)) - Sum(Penalties)
+Date: May 2026
+============================================================================
 """
 This module implements the "Homeostatic Controller" for the Ashby System.
 
