@@ -1,10 +1,13 @@
 """
 ============================================================================
-ASHBY-VIRA CORE v2.1 — THE DETERMINISTIC BRAIN (WITH PERSISTENCE)
+ASHBY-VIRA CORE v2.0 — THE DETERMINISTIC BRAIN
 ============================================================================
 
-ARCHITECTURAL CONSTITUTION (Embedded by Lumo)
+ARCHITECTURAL CONSTITUTION
 ---------------------------------------------
+Designed by Ian Kubath with AI-assisted architecture by Lumo (Proton).
+.............................................
+"""
 This module implements the "Homeostatic Controller" for the Ashby System.
 
 1. DETERMINISM FIRST:
