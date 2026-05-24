@@ -115,7 +115,7 @@ class AshbyCounterfactualEngine:
 
         return twin_world
 
-    def predict_multi_world_safety(self, intervention: Dict[str, float], target_node: str, hazard_threshold: float) -> Tuple[bool, float, Dict[str, float]]:
+     def predict_multi_world_safety(self, intervention: Dict[str, float], target_node: str, hazard_threshold: float) -> Tuple[bool, float, Dict[str, float]]:
         """
         Steps 2 & 3 (Multi-World): Simulates intervention across ALL consistent worlds.
         Returns: (is_safe, worst_case_value, worst_case_world)
@@ -158,10 +158,51 @@ class AshbyCounterfactualEngine:
                     worst_case_val = val
                     worst_case_world = twin_world.copy()
         else:
-            # Fallback: Just check the center U (Twin World) if graph is too complex
-            twin_world = self.predict_twin_world(intervention)
+            # FIX: Use center U values from u_range instead of calling predict_twin_world
+            # This avoids the dependency on self.abducted_u
+            twin_world = {}
+            sorted_nodes = sorted(self.equations.keys(), key=lambda k: len(self.parents[k]))
+            for node in sorted_nodes:
+                if node in intervention:
+                    twin_world[node] = intervention[node]
+                    continue
+                
+                parent_vals = {p: twin_world[p] for p in self.parents[node]}
+                base_val = self.equations[node](parent_vals)
+                # Use the CENTER of the U range as the representative value
+                if node in self.u_range:
+                    u_center = (self.u_range[node][0] + self.u_range[node][1]) / 2
+                else:
+                    u_center = 0
+                twin_world[node] = base_val + u_center
+            
             worst_case_val = twin_world.get(target_node, 0)
             worst_case_world = twin_world
+            
+            # Also check the extreme U values for the target node to ensure safety
+            if target_node in self.u_range:
+                u_min, u_max = self.u_range[target_node]
+                # Re-simulate with min and max U for the target
+                for u_extreme in [u_min, u_max]:
+                    test_world = {}
+                    for node in sorted_nodes:
+                        if node in intervention:
+                            test_world[node] = intervention[node]
+                            continue
+                        parent_vals = {p: test_world[p] for p in self.parents[node]}
+                        base_val = self.equations[node](parent_vals)
+                        if node == target_node:
+                            u_val = u_extreme
+                        elif node in self.u_range:
+                            u_val = (self.u_range[node][0] + self.u_range[node][1]) / 2
+                        else:
+                            u_val = 0
+                        test_world[node] = base_val + u_val
+                    
+                    val = test_world.get(target_node, 0)
+                    if val > worst_case_val:
+                        worst_case_val = val
+                        worst_case_world = test_world.copy()
 
         is_safe = worst_case_val < hazard_threshold
         return is_safe, worst_case_val, worst_case_world
