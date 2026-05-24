@@ -40,11 +40,6 @@ from ashby_core import (
 # ============================================================================
 
 class AshbyCounterfactualEngine:
-    """
-    Advanced Counterfactual Engine for Ashby.
-    Implements Pearl's Ladder of Causation (Rung 3) with Multi-World Safety.
-    """
-
     def __init__(self, structural_equations: Dict[str, Callable], graph_parents: Dict[str, list]):
         self.equations = structural_equations
         self.parents = graph_parents
@@ -52,12 +47,8 @@ class AshbyCounterfactualEngine:
         self.u_range: Dict[str, Tuple[float, float]] = {}
 
     def abduction_invertible(self, observed_state: Dict[str, float]) -> Dict[str, float]:
-        """
-        Step 1: Abduction. Solves for U exactly if Y = f(parents) + U.
-        """
         self.abducted_u = {}
         sorted_nodes = sorted(self.equations.keys(), key=lambda k: len(self.parents[k]))
-
         for node in sorted_nodes:
             parent_vals = {p: observed_state[p] for p in self.parents[node]}
             observed_val = observed_state[node]
@@ -67,122 +58,89 @@ class AshbyCounterfactualEngine:
         return self.abducted_u
 
     def abduction_multi_world(self, observed_state: Dict[str, float], tolerance: float = 0.1, resolution: int = 100) -> Dict[str, List[float]]:
-        """
-        Step 1 (Multi-World): Find the SET of all U values consistent with observation.
-        """
         consistent_u_sets = {}
         sorted_nodes = sorted(self.equations.keys(), key=lambda k: len(self.parents[k]))
-
         for node in sorted_nodes:
             parent_vals = {p: observed_state[p] for p in self.parents[node]}
             observed_val = observed_state[node]
             base_val = self.equations[node](parent_vals)
             center_u = observed_val - base_val
-            
             u_min = center_u - tolerance
             u_max = center_u + tolerance
-            
             candidates = []
             step = (u_max - u_min) / resolution
             for i in range(resolution + 1):
                 u = u_min + (i * step)
                 candidates.append(u)
-            
             consistent_u_sets[node] = candidates
-        
         self.u_range = {k: (min(v), max(v)) for k, v in consistent_u_sets.items()}
         return consistent_u_sets
 
     def predict_twin_world(self, intervention: Dict[str, float]) -> Dict[str, float]:
-        """
-        Steps 2 & 3: Action (do(X)) and Prediction (Single World).
-        """
         if not self.abducted_u:
             raise ValueError("Must run abduction first.")
-
         twin_world = {}
         sorted_nodes = sorted(self.equations.keys(), key=lambda k: len(self.parents[k]))
-
         for node in sorted_nodes:
             if node in intervention:
                 twin_world[node] = intervention[node]
                 continue
-            
             parent_vals = {p: twin_world[p] for p in self.parents[node]}
             base_val = self.equations[node](parent_vals)
             u_val = self.abducted_u.get(node, 0)
             twin_world[node] = base_val + u_val
-
         return twin_world
 
-     def predict_multi_world_safety(self, intervention: Dict[str, float], target_node: str, hazard_threshold: float) -> Tuple[bool, float, Dict[str, float]]:
-        """
-        Steps 2 & 3 (Multi-World): Simulates intervention across ALL consistent worlds.
-        Returns: (is_safe, worst_case_value, worst_case_world)
-        """
+    def predict_multi_world_safety(self, intervention: Dict[str, float], target_node: str, hazard_threshold: float) -> Tuple[bool, float, Dict[str, float]]:
         if not self.u_range:
             raise ValueError("Must run multi-world abduction first.")
-
         worst_case_val = -float('inf')
         worst_case_world = None
         is_safe = True
-
-        # Generate sample points for each node
         sample_points = {}
         for node, (u_min, u_max) in self.u_range.items():
             step = (u_max - u_min) / 10
             sample_points[node] = [u_min + i * step for i in range(11)]
-
         nodes = list(self.u_range.keys())
         
         if len(nodes) <= 2:
-            # Full sweep for small graphs
             ranges = [sample_points[n] for n in nodes]
             for u_combo in itertools.product(*ranges):
                 twin_world = {}
                 u_map = dict(zip(nodes, u_combo))
-                
                 sorted_nodes = sorted(self.equations.keys(), key=lambda k: len(self.parents[k]))
                 for node in sorted_nodes:
                     if node in intervention:
                         twin_world[node] = intervention[node]
                         continue
-                    
                     parent_vals = {p: twin_world[p] for p in self.parents[node]}
                     base_val = self.equations[node](parent_vals)
                     u_val = u_map.get(node, 0)
                     twin_world[node] = base_val + u_val
-                
                 val = twin_world.get(target_node, 0)
                 if val > worst_case_val:
                     worst_case_val = val
                     worst_case_world = twin_world.copy()
         else:
-            # FIX: Use center U values from u_range instead of calling predict_twin_world
-            # This avoids the dependency on self.abducted_u
+            # FIXED LOGIC: No call to predict_twin_world
             twin_world = {}
             sorted_nodes = sorted(self.equations.keys(), key=lambda k: len(self.parents[k]))
             for node in sorted_nodes:
                 if node in intervention:
                     twin_world[node] = intervention[node]
                     continue
-                
                 parent_vals = {p: twin_world[p] for p in self.parents[node]}
                 base_val = self.equations[node](parent_vals)
-                # Use the CENTER of the U range as the representative value
                 if node in self.u_range:
                     u_center = (self.u_range[node][0] + self.u_range[node][1]) / 2
                 else:
                     u_center = 0
                 twin_world[node] = base_val + u_center
-            
             worst_case_val = twin_world.get(target_node, 0)
             worst_case_world = twin_world
             
-            # Also check the extreme U values for the target node to ensure safety
             if target_node in self.u_range:
                 u_min, u_max = self.u_range[target_node]
-                # Re-simulate with min and max U for the target
                 for u_extreme in [u_min, u_max]:
                     test_world = {}
                     for node in sorted_nodes:
@@ -198,7 +156,6 @@ class AshbyCounterfactualEngine:
                         else:
                             u_val = 0
                         test_world[node] = base_val + u_val
-                    
                     val = test_world.get(target_node, 0)
                     if val > worst_case_val:
                         worst_case_val = val
@@ -208,10 +165,6 @@ class AshbyCounterfactualEngine:
         return is_safe, worst_case_val, worst_case_world
 
     def run_counterfactual(self, observed: Dict[str, float], intervention: Dict[str, float], target: str, mode: str = "twin", hazard_threshold: float = 100.0) -> Dict[str, Any]:
-        """
-        Main Entry Point.
-        mode: "twin" (fast, exact) or "multi" (robust, worst-case)
-        """
         if mode == "twin":
             self.abduction_invertible(observed)
             twin_world = self.predict_twin_world(intervention)
