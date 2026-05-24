@@ -1,27 +1,63 @@
-import json, time, math, threading, os
+"""
+============================================================================
+ASHBY-VIRA CORE v2.1 - DEMO FRIENDLY (Forgiving & Fast)
+============================================================================
+
+ARCHITECTURAL CONSTITUTION
+---------------------------------------------
+1. DETERMINISM FIRST: Calculated, not guessed.
+2. THE ARNOLDIAN FILTER: Validates Causality, not just arithmetic.
+3. EPISTEMIC HUMILITY: Freezes if logic is broken, not if stressed.
+4. SAFETY PROTOCOL: Separated from UI for auditability.
+5. RESILIENCE: State persists to disk.
+
+CHANGES IN v2.1 (DEMO MODE):
+- Reduced penalties so single errors don't crash the system.
+- Increased recovery rate (Alpha) for faster healing.
+- Disabled "Stagnation Penalty" to prevent sudden death spirals.
+- Raised Critical threshold so the system stays usable longer.
+
+Built with: Stability Formula S(t+1) = S(t) + a(1-S(t)) - Sum(Penalties)
+Date: May 24, 2026
+============================================================================
+"""
+
+import json
+import time
+import math
+import threading
+import os
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict
 from collections import deque
 
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
 STATE_FILE = "ashby_state.json"
+
+# ============================================================================
+# SECURITY SHIELD: RATE LIMITING (Thread-Safe)
+# ============================================================================
 _rate_limit_store = {}
 _rate_limit_lock = threading.Lock()
 
-def check_rate_limit(user_id, max_requests=5, window_seconds=60):
+def check_rate_limit(user_id: str, max_requests: int = 10, window_seconds: int = 60) -> bool:
+    """Increased limit for demo users (10 req/min)"""
     now = time.time()
     with _rate_limit_lock:
         if user_id not in _rate_limit_store:
             _rate_limit_store[user_id] = deque()
-        h = _rate_limit_store[user_id]
-        while h and h[0] < now - window_seconds:
-            h.popleft()
-        if len(h) >= max_requests:
+        user_history = _rate_limit_store[user_id]
+        while user_history and user_history[0] < now - window_seconds:
+            user_history.popleft()
+        if len(user_history) >= max_requests:
             return False
-        h.append(now)
+        user_history.append(now)
         return True
 
-def validate_input(data):
+def validate_input(data: dict) -> bool:
     if "type" not in data:
         raise ValueError("Missing type")
     if data["type"] not in ["bug", "feature_request", "general_feedback"]:
@@ -33,9 +69,34 @@ def validate_input(data):
         raise ValueError("Rate limit exceeded")
     return True
 
-ALPHA = 0.15
-STAGNATION_LIMIT = 3
+# ============================================================================
+# CONSTANTS (DEMO-FRIENDLY TUNING)
+# ============================================================================
+
+# 1. FASTER RECOVERY: Heals 30% per cycle (was 15%)
+ALPHA = 0.30 
+
+# 2. LOWER PENALTIES: Single critical hit drops score to 0.8, not 0.0
+SEVERITY_PENALTIES = {
+    "low": 0.02,       # Was 0.05
+    "medium": 0.05,    # Was 0.15
+    "high": 0.10,      # Was 0.25
+    "critical": 0.20,  # Was 0.40 (Now: 1 bad prompt = 0.8 score)
+}
+
+# 3. DISABLE STAGNATION PENALTY: No sudden "Death Spiral" for casual users
+STAGNATION_PENALTY = 0.0      # Was 0.50
+STAGNATION_LIMIT = 99         # Effectively infinite for demo
+STAGNATION_IGNORE_HOURS = 1
+
+# 4. HIGHER CRITICAL THRESHOLD: Only crash if score < 0.2 (was 0.045)
+DEATH_SPIRAL_THRESHOLD = 0.20
+
 RECOVERY_RESET_SCORE = 0.85
+
+# ============================================================================
+# ONTOLOGY
+# ============================================================================
 
 class LoopCategory(Enum):
     CATEGORY_I = "closed"
@@ -54,9 +115,9 @@ class Severity(Enum):
     HIGH = "high"
     CRITICAL = "critical"
 
-SEVERITY_PENALTIES = {Severity.LOW: 0.05, Severity.MEDIUM: 0.15, Severity.HIGH: 0.25, Severity.CRITICAL: 0.40}
-STAGNATION_PENALTY = 0.50
-FEATURE_REQUEST_PENALTY = 0.05
+# ============================================================================
+# ASHBY — THE HOMEOSTAT (TUNED)
+# ============================================================================
 
 @dataclass
 class StabilityState:
@@ -71,103 +132,177 @@ class StabilityState:
     decay_cycle_count: int = 0
     stagnation_start_time: Optional[float] = None
 
-    def _calculate_status(self):
+    def _calculate_status(self) -> SystemStatus:
         if self.last_mutation_blocked:
             return SystemStatus.FROZEN
         if self.score >= 0.7:
             return SystemStatus.STABLE
-        if self.score >= 0.4:
-            return SystemStatus.RECOVERING if self.stagnation_count == 0 else SystemStatus.WARNING
-        return SystemStatus.CRITICAL
+        elif self.score >= 0.2: # Lowered threshold for Critical
+            if self.stagnation_count == 0:
+                return SystemStatus.RECOVERING
+            return SystemStatus.WARNING
+        else:
+            return SystemStatus.CRITICAL
 
-    def _cycles_to_stable(self):
+    def _cycles_to_stable(self) -> int:
         if self.score >= 0.7:
             return 0
-        gap = 1.0 - self.score
-        if gap <= 0:
+        target_gap = 0.3
+        current_gap = 1.0 - self.score
+        if current_gap <= 0:
+            return 0
+        if current_gap <= 0.0001:
             return 0
         try:
-            return max(0, math.ceil(math.log(0.3 / gap) / math.log(1 - self.alpha)))
-        except:
+            t = math.log(target_gap / current_gap) / math.log(1 - self.alpha)
+            return max(0, math.ceil(t))
+        except ValueError:
             return 999
 
-    def calculate_weighted_penalty(self, severity, trust_score=1.0):
-        return SEVERITY_PENALTIES[severity] * max(0.1, min(1.0, trust_score))
+    def calculate_weighted_penalty(self, severity: Severity, trust_score: float = 1.0) -> float:
+        base_penalty = SEVERITY_PENALTIES[severity.value]
+        dampening = max(0.1, min(1.0, trust_score))
+        return base_penalty * dampening
 
-    def apply_input(self, severity, input_type="bug", timestamp=None, trust_score=1.0):
+    def apply_input(self, severity: Severity, input_type: str = "bug", timestamp: float = None, trust_score: float = 1.0) -> dict:
         ts = timestamp or time.time()
         self.last_penalty_time = ts
+
+        # Stagnation logic is now effectively disabled for demo
         if self.stagnation_count >= STAGNATION_LIMIT:
             if input_type == "bug" and severity in [Severity.LOW, Severity.MEDIUM]:
-                if self.stagnation_start_time and (ts - self.stagnation_start_time) < 3600:
+                if self.stagnation_start_time and (ts - self.stagnation_start_time) < STAGNATION_IGNORE_HOURS * 3600:
                     self.noise_ignored_count += 1
-                    return {"status": "filtered_noise", "reason": "Ignored", "stability_score": round(self.score, 4), "action": "IGNORE"}
+                    return {
+                        "status": "filtered_noise",
+                        "reason": "Ignored",
+                        "stability_score": round(self.score, 4),
+                        "action": "IGNORE"
+                    }
                 self.stagnation_start_time = ts
+
         penalty = self.calculate_weighted_penalty(severity, trust_score)
         if input_type == "feature_request":
-            penalty = FEATURE_REQUEST_PENALTY * trust_score
-        if self.stagnation_count >= STAGNATION_LIMIT:
-            penalty += STAGNATION_PENALTY
-        self.score = max(0.0, min(1.0, self.score - penalty))
+            penalty = 0.05 * trust_score # Feature requests are low impact
+        
+        # No Stagnation Penalty added
+        # if self.stagnation_count >= STAGNATION_LIMIT:
+        #     penalty += STAGNATION_PENALTY
+
+        self.score -= penalty
+        self.score = max(0.0, min(1.0, self.score))
+
         if penalty > 0:
             self.stagnation_count += 1
             if self.stagnation_count == STAGNATION_LIMIT:
                 self.stagnation_start_time = ts
         else:
             self.stagnation_count = 0
+
         self.status = self._calculate_status()
         action = self._decide_action()
-        self.history.append({"timestamp": ts, "input": input_type, "severity": severity.value, "penalty": penalty, "score_after": round(self.score, 4), "action": action["action"]})
-        return {"stability_score": round(self.score, 4), "status": self.status.value, "penalty_applied": penalty, "action": action, "cycles_to_stable": self._cycles_to_stable()}
 
-    def apply_decay(self):
+        self.history.append({
+            "timestamp": ts,
+            "input": input_type,
+            "severity": severity.value,
+            "penalty": penalty,
+            "score_after": round(self.score, 4),
+            "action": action["action"]
+        })
+
+        return {
+            "stability_score": round(self.score, 4),
+            "status": self.status.value,
+            "penalty_applied": penalty,
+            "action": action,
+            "cycles_to_stable": self._cycles_to_stable()
+        }
+
+    def apply_decay(self) -> dict:
         self.decay_cycle_count += 1
-        self.score = min(1.0, self.score + self.alpha * (1.0 - self.score))
+        # Faster recovery: 30% of the gap
+        self.score = self.score + self.alpha * (1.0 - self.score)
+        self.score = min(1.0, self.score)
+
         if self.stagnation_count > 0 and self.score >= 0.7:
             self.stagnation_count = 0
             self.stagnation_start_time = None
+
         self.status = self._calculate_status()
-        return {"stability_score": round(self.score, 4), "status": self.status.value, "recovery_applied": True, "cycles_to_stable": self._cycles_to_stable()}
 
-    def _decide_action(self):
+        return {
+            "stability_score": round(self.score, 4),
+            "status": self.status.value,
+            "recovery_applied": True,
+            "cycles_to_stable": self._cycles_to_stable()
+        }
+
+    def _decide_action(self) -> dict:
         if self.status == SystemStatus.FROZEN:
-            return {"action": "ALERT_HUMAN", "reason": "Blocked", "loop_category": "open"}
+            return {
+                "action": "ALERT_HUMAN",
+                "reason": "Vira blocked the last mutation. Manual intervention required.",
+                "loop_category": LoopCategory.CATEGORY_II.value
+            }
         if self.status == SystemStatus.CRITICAL:
-            return {"action": "TRIGGER_MUTATION", "reason": "Critical", "loop_category": "open", "mutation_type": "diversion"}
+            return {
+                "action": "TRIGGER_MUTATION",
+                "reason": f"Stability critical ({self.score:.2f}). Structural shift required.",
+                "loop_category": LoopCategory.CATEGORY_II.value,
+                "mutation_type": "arnoldian_diversion"
+            }
         if self.status == SystemStatus.WARNING:
-            return {"action": "FLAG", "reason": "Degraded", "loop_category": "open"}
-        return {"action": "ALLOW", "reason": "Nominal", "loop_category": "closed"}
+            return {
+                "action": "FLAG",
+                "reason": f"Stability degraded ({self.score:.2f}). Monitor closely.",
+                "loop_category": LoopCategory.CATEGORY_II.value
+            }
+        return {
+            "action": "ALLOW",
+            "reason": f"Stability nominal ({self.score:.2f}).",
+            "loop_category": LoopCategory.CATEGORY_I.value
+        }
 
-    def reset_after_mutation(self):
+    def reset_after_mutation(self) -> None:
         self.score = RECOVERY_RESET_SCORE
         self.stagnation_count = 0
         self.last_mutation_blocked = False
         self.stagnation_start_time = None
         self.status = self._calculate_status()
 
+# ============================================================================
+# VIRA — THE CAUSAL VALIDATOR (UNCHANGED)
+# ============================================================================
+
 class ViraValidator:
     @staticmethod
-    def has_cycle(graph):
-        visited, rec_stack = set(), set()
-        def dfs(node):
+    def has_cycle(graph: Dict[str, List[str]]) -> bool:
+        visited = set()
+        rec_stack = set()
+
+        def dfs(node: str) -> bool:
             visited.add(node)
             rec_stack.add(node)
-            for nb in graph.get(node, []):
-                if nb not in visited:
-                    if dfs(nb):
+            for neighbor in graph.get(node, []):
+                if neighbor not in visited:
+                    if dfs(neighbor):
                         return True
-                elif nb in rec_stack:
+                elif neighbor in rec_stack:
                     return True
             rec_stack.remove(node)
             return False
+
         for node in graph:
-            if node not in visited and dfs(node):
-                return True
+            if node not in visited:
+                if dfs(node):
+                    return True
         return False
 
     @staticmethod
-    def is_goal_reachable(graph, start="Self", goal="Goal"):
-        queue, visited = [start], set()
+    def is_goal_reachable(graph: Dict[str, List[str]], start: str = "Self", goal: str = "Goal") -> bool:
+        queue = [start]
+        visited = set()
         while queue:
             node = queue.pop(0)
             if node == goal:
@@ -175,32 +310,75 @@ class ViraValidator:
             if node in visited:
                 continue
             visited.add(node)
-            queue.extend(graph.get(node, []))
+            for neighbor in graph.get(node, []):
+                queue.append(neighbor)
         return False
 
     @staticmethod
-    def verify_closure(graph, start="Self", goal="Goal"):
-        if ViraValidator.has_cycle(graph):
-            return {"closure": "open", "valid": False, "reason": "Cycle detected", "path": None}
-        if not ViraValidator.is_goal_reachable(graph, start, goal):
-            return {"closure": "open", "valid": False, "reason": "Goal unreachable", "path": None}
-        return {"closure": "closed", "valid": True, "reason": "Valid", "path": [start, goal]}
+    def verify_closure(graph: Dict[str, List[str]], start: str = "Self", goal: str = "Goal") -> dict:
+        has_cycle_flag = ViraValidator.has_cycle(graph)
+        reachable = ViraValidator.is_goal_reachable(graph, start, goal)
+
+        if has_cycle_flag:
+            return {
+                "closure": LoopCategory.CATEGORY_II.value,
+                "valid": False,
+                "reason": "Graph contains a cycle (Feedback Loop). Category II.",
+                "path": None
+            }
+        
+        if not reachable:
+            return {
+                "closure": LoopCategory.CATEGORY_II.value,
+                "valid": False,
+                "reason": "Goal is not reachable from Start.",
+                "path": None
+            }
+
+        return {
+            "closure": LoopCategory.CATEGORY_I.value,
+            "valid": True,
+            "reason": "Graph is acyclic and Goal is reachable. Category I.",
+            "path": [start, goal]
+        }
 
     @staticmethod
-    def validate_mutation(mutation_graph, stability):
+    def validate_mutation(mutation_graph: Dict[str, List[str]], stability: StabilityState) -> dict:
         result = ViraValidator.verify_closure(mutation_graph)
         if not result["valid"]:
             stability.last_mutation_blocked = True
             stability.status = SystemStatus.FROZEN
-            return {"approved": False, "reason": result["reason"], "closure": result["closure"], "action": "ALERT_HUMAN"}
-        return {"approved": True, "reason": "Valid", "closure": result["closure"], "action": "APPLY_MUTATION"}
+            return {
+                "approved": False,
+                "reason": f"Mutation rejected: {result['reason']}",
+                "closure": result["closure"],
+                "action": "ALERT_HUMAN"
+            }
+        return {
+            "approved": True,
+            "reason": "Mutation achieves Category I closure.",
+            "closure": result["closure"],
+            "action": "APPLY_MUTATION"
+        }
+
+# ============================================================================
+# PERSISTENCE & API (UNCHANGED)
+# ============================================================================
 
 def save_state():
     try:
+        data = {
+            "score": system_state.score,
+            "stagnation_count": system_state.stagnation_count,
+            "history": system_state.history[-100:],
+            "last_mutation_blocked": system_state.last_mutation_blocked,
+            "noise_ignored_count": system_state.noise_ignored_count,
+            "decay_cycle_count": system_state.decay_cycle_count
+        }
         with open(STATE_FILE, "w") as f:
-            json.dump({"score": system_state.score, "stagnation_count": system_state.stagnation_count, "history": system_state.history[-100:], "last_mutation_blocked": system_state.last_mutation_blocked, "noise_ignored_count": system_state.noise_ignored_count, "decay_cycle_count": system_state.decay_cycle_count}, f)
+            json.dump(data, f)
     except Exception as e:
-        print(f"Save error: {e}")
+        print(f"Warning: Could not save state: {e}")
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -214,39 +392,68 @@ def load_state():
             system_state.noise_ignored_count = data.get("noise_ignored_count", 0)
             system_state.decay_cycle_count = data.get("decay_cycle_count", 0)
             system_state.status = system_state._calculate_status()
+            print(f"State loaded: Score={system_state.score}, Status={system_state.status.value}")
         except Exception as e:
-            print(f"Load error: {e}")
+            print(f"Warning: Could not load state: {e}")
 
 system_state = StabilityState()
 load_state()
 
-def handle_feedback(event):
+def handle_feedback(event: dict) -> dict:
     try:
         validate_input(event)
         input_type = event.get("type", "general_feedback")
         severity_str = event.get("severity", "medium")
         trust_score = event.get("trust_score", 1.0)
+        
         try:
             severity = Severity(severity_str)
-        except:
+        except ValueError:
             severity = Severity.MEDIUM
+            
         result = system_state.apply_input(severity, input_type, trust_score=trust_score)
         save_state()
-        return {"status": "processed", "stability_score": result["stability_score"], "system_status": result["status"], "action": result["action"], "cycles_to_stable": result["cycles_to_stable"], "noise_ignored": system_state.noise_ignored_count}
+        
+        return {
+            "status": "processed",
+            "stability_score": result["stability_score"],
+            "system_status": result["status"],
+            "action": result["action"],
+            "cycles_to_stable": result["cycles_to_stable"],
+            "noise_ignored": system_state.noise_ignored_count
+        }
+        
     except ValueError as e:
-        return {"status": "blocked", "reason": str(e), "stability_score": round(system_state.score, 4), "action": {"action": "IGNORE"}}
+        return {
+            "status": "blocked",
+            "reason": str(e),
+            "stability_score": round(system_state.score, 4),
+            "action": {"action": "IGNORE"}
+        }
 
-def handle_decay_cycle():
+def handle_decay_cycle() -> dict:
     result = system_state.apply_decay()
     save_state()
-    return {"status": "decay_applied", "stability_score": result["stability_score"], "system_status": result["status"], "cycles_to_stable": result["cycles_to_stable"]}
+    return {
+        "status": "decay_applied",
+        "stability_score": result["stability_score"],
+        "system_status": result["status"],
+        "cycles_to_stable": result["cycles_to_stable"]
+    }
 
-def handle_validate_mutation(mutation_graph):
+def handle_validate_mutation(mutation_graph: dict) -> dict:
     result = ViraValidator.validate_mutation(mutation_graph, system_state)
     if result["approved"]:
         system_state.reset_after_mutation()
         save_state()
     return result
 
-def handle_get_state():
-    return {"stability_score": round(system_state.score, 4), "status": system_state.status.value, "stagnation_count": system_state.stagnation_count, "history_length": len(system_state.history), "cycles_to_stable": system_state._cycles_to_stable(), "noise_ignored": system_state.noise_ignored_count}
+def handle_get_state() -> dict:
+    return {
+        "stability_score": round(system_state.score, 4),
+        "status": system_state.status.value,
+        "stagnation_count": system_state.stagnation_count,
+        "history_length": len(system_state.history),
+        "cycles_to_stable": system_state._cycles_to_stable(),
+        "noise_ignored": system_state.noise_ignored_count
+    }
