@@ -16,9 +16,10 @@ CHANGES IN v2.1 (DEMO MODE):
 - Increased recovery rate (Alpha) for faster healing.
 - Disabled "Stagnation Penalty" to prevent sudden death spirals.
 - Raised Critical threshold so the system stays usable longer.
+- FIXED: Ensured 'cycles_to_stable' and 'noise_ignored' are always returned.
 
 Built with: Stability Formula S(t+1) = S(t) + a(1-S(t)) - Sum(Penalties)
-Date: May 24, 2026
+Date: May 25, 2026
 ============================================================================
 """
 
@@ -362,7 +363,7 @@ class ViraValidator:
         }
 
 # ============================================================================
-# PERSISTENCE & API (UNCHANGED)
+# PERSISTENCE & API (FIXED)
 # ============================================================================
 
 def save_state():
@@ -414,12 +415,13 @@ def handle_feedback(event: dict) -> dict:
         result = system_state.apply_input(severity, input_type, trust_score=trust_score)
         save_state()
         
+        # FIX: Ensure 'cycles_to_stable' and 'noise_ignored' are always present
         return {
             "status": "processed",
-            "stability_score": result["stability_score"],
-            "system_status": result["status"],
-            "action": result["action"],
-            "cycles_to_stable": result["cycles_to_stable"],
+            "stability_score": result.get("stability_score", 1.0),
+            "system_status": result.get("status", "unknown"),
+            "action": result.get("action", {"action": "UNKNOWN"}),
+            "cycles_to_stable": result.get("cycles_to_stable", 0), # Guaranteed to exist
             "noise_ignored": system_state.noise_ignored_count
         }
         
@@ -428,7 +430,9 @@ def handle_feedback(event: dict) -> dict:
             "status": "blocked",
             "reason": str(e),
             "stability_score": round(system_state.score, 4),
-            "action": {"action": "IGNORE"}
+            "action": {"action": "IGNORE"},
+            "cycles_to_stable": system_state._cycles_to_stable(),
+            "noise_ignored": system_state.noise_ignored_count
         }
 
 def handle_decay_cycle() -> dict:
